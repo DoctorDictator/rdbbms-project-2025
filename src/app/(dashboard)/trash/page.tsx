@@ -591,9 +591,11 @@ export default function TrashPage() {
                         </div>
                       </td>
 
-                      {/* Content Preview */}
+                      {/* Content Preview (preserve line breaks WITHOUT changing UI/logic) */}
                       <td className="px-6 py-4 text-sm text-gray-400 hidden lg:table-cell max-w-xs">
-                        {truncateText(file.content, 60)}
+                        <span className="whitespace-pre-line break-words">
+                          {truncateText(file.content, 60)}
+                        </span>
                       </td>
 
                       {/* Favorite */}

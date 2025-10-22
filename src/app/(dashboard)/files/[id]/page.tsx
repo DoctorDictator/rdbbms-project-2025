@@ -514,7 +514,8 @@ export default function FileDetailPage() {
               Content
             </h2>
             <div className="bg-gray-800/30 border border-gray-700 rounded-lg p-6">
-              <div className="text-gray-200 whitespace-pre-wrap leading-relaxed">
+              {/* CHANGE: ensure newline characters render as actual line breaks */}
+              <div className="text-gray-200 whitespace-pre-line break-words leading-relaxed">
                 {file.content}
               </div>
             </div>

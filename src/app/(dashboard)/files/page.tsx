@@ -4,6 +4,12 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 
+interface FileOwner {
+  id?: string;
+  name?: string;
+  email?: string;
+}
+
 interface File {
   id: string;
   title: string;
@@ -13,6 +19,9 @@ interface File {
   createdAt: string;
   updatedAt: string;
   userId: string;
+  // Optional owner fields to support your schema without breaking existing responses
+  ownerId?: string;
+  owner?: FileOwner;
 }
 
 export default function FilesPage() {
@@ -191,7 +200,6 @@ export default function FilesPage() {
 
       await Promise.all(trashPromises);
 
-      // Update files state
       setFiles(
         files.map((f) =>
           selectedFiles.has(f.id) ? { ...f, isTrashed: true } : f
@@ -216,7 +224,6 @@ export default function FilesPage() {
       const responses = await Promise.all(favoritePromises);
       const data = await Promise.all(responses.map((r) => r.json()));
 
-      // Update files state
       setFiles(
         files.map((f) => {
           const index = Array.from(selectedFiles).indexOf(f.id);
@@ -250,6 +257,13 @@ export default function FilesPage() {
   const truncateText = (text: string, maxLength: number = 50) => {
     if (text.length <= maxLength) return text;
     return text.substring(0, maxLength) + "...";
+  };
+
+  const getOwnerLabel = (file: File) => {
+    if (file.owner?.name) return file.owner.name;
+    if (file.ownerId) return `#${file.ownerId.slice(0, 8)}`;
+    if (file.userId) return `#${file.userId.slice(0, 8)}`;
+    return "—";
   };
 
   // Filter files based on search only
@@ -411,7 +425,7 @@ export default function FilesPage() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 0 0118 0z"
                   />
                 </svg>
                 {error}
@@ -441,7 +455,7 @@ export default function FilesPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full table-fixed">
                 <thead className="bg-gray-800/50 border-b border-gray-800">
                   <tr>
                     <th className="px-6 py-4 text-left">
@@ -461,8 +475,15 @@ export default function FilesPage() {
                     <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                       Title
                     </th>
-                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider hidden lg:table-cell">
-                      Content Preview
+
+                    {/* ➕ Owner column (minimal addition) */}
+                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Owner
+                    </th>
+
+                    {/* ➕ Created column (minimal addition) */}
+                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Created
                     </th>
                     <th className="px-6 py-4 text-center text-xs font-medium text-gray-400 uppercase tracking-wider hidden xl:table-cell">
                       Favorite
@@ -487,7 +508,7 @@ export default function FilesPage() {
                       }`}
                     >
                       {/* Checkbox */}
-                      <td className="px-6 py-4 whitespace-nowrap">
+                      <td className="px-6 py-4">
                         <input
                           type="checkbox"
                           checked={selectedFiles.has(file.id)}
@@ -497,23 +518,23 @@ export default function FilesPage() {
                       </td>
 
                       {/* ID */}
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <td className="px-6 py-4 text-sm text-gray-500">
                         <Link
                           href={`/files/${file.id}`}
-                          className="hover:text-blue-400 transition-colors font-mono"
+                          className="hover:text-blue-400 transition-colors font-mono block truncate"
                         >
                           #{file.id.slice(0, 8)}
                         </Link>
                       </td>
 
                       {/* Title */}
-                      <td className="px-6 py-4 whitespace-nowrap">
+                      <td className="px-6 py-4">
                         <Link
                           href={`/files/${file.id}`}
-                          className="flex items-center gap-2 hover:text-blue-400 transition-colors"
+                          className="flex items-start gap-2 hover:text-blue-400 transition-colors min-w-0"
                         >
                           <svg
-                            className="w-5 h-5 text-blue-500 flex-shrink-0"
+                            className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5"
                             fill="none"
                             stroke="currentColor"
                             viewBox="0 0 24 24"
@@ -525,24 +546,26 @@ export default function FilesPage() {
                               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
                             />
                           </svg>
-                          <span className="text-white font-medium">
+                          <span className="text-white font-medium block whitespace-pre-wrap break-words min-w-0">
                             {file.title}
                           </span>
                         </Link>
                       </td>
 
-                      {/* Content Preview */}
-                      <td className="px-6 py-4 text-sm text-gray-400 hidden lg:table-cell max-w-xs">
-                        <button
-                          onClick={() => handleViewFile(file)}
-                          className="hover:text-gray-300 transition-colors text-left"
-                        >
-                          {truncateText(file.content, 60)}
-                        </button>
+                      {/* ➕ Owner cell */}
+                      <td className="px-6 py-4 text-sm text-gray-300">
+                        <span className="block whitespace-pre-wrap break-words min-w-0">
+                          {getOwnerLabel(file)}
+                        </span>
+                      </td>
+
+                      {/* ➕ Created cell */}
+                      <td className="px-6 py-4 text-sm text-gray-400">
+                        {formatDate(file.createdAt)}
                       </td>
 
                       {/* Favorite */}
-                      <td className="px-6 py-4 whitespace-nowrap text-center hidden xl:table-cell">
+                      <td className="px-6 py-4 text-center hidden xl:table-cell">
                         {file.isFavorite ? (
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
                             ⭐ Yes
@@ -555,7 +578,7 @@ export default function FilesPage() {
                       </td>
 
                       {/* Trashed */}
-                      <td className="px-6 py-4 whitespace-nowrap text-center hidden xl:table-cell">
+                      <td className="px-6 py-4 text-center hidden xl:table-cell">
                         {file.isTrashed ? (
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
                             🗑️ Yes
@@ -568,13 +591,13 @@ export default function FilesPage() {
                       </td>
 
                       {/* Updated Date */}
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400 hidden 2xl:table-cell">
+                      <td className="px-6 py-4 text-sm text-gray-400 hidden 2xl:table-cell">
                         {formatDate(file.updatedAt)}
                       </td>
 
                       {/* Actions */}
-                      <td className="px-6 py-4 whitespace-nowrap text-center">
-                        <div className="flex items-center justify-center gap-2">
+                      <td className="px-6 py-4 text-center">
+                        <div className="flex flex-wrap items-center justify-center gap-2">
                           {/* View Button */}
                           <button
                             onClick={() => handleViewFile(file)}
@@ -828,7 +851,8 @@ export default function FilesPage() {
                 <h3 className="text-sm font-medium text-gray-400 mb-2">
                   Content:
                 </h3>
-                <div className="bg-gray-800/30 border border-gray-700 rounded-lg p-4 text-white whitespace-pre-wrap">
+                {/* preserves \n and wraps long tokens */}
+                <div className="bg-gray-800/30 border border-gray-700 rounded-lg p-4 text-white whitespace-pre-wrap break-words">
                   {selectedFile.content}
                 </div>
               </div>
@@ -884,7 +908,8 @@ export default function FilesPage() {
 
             <p className="text-gray-300 mb-6">
               Are you sure you want to permanently delete &quot;
-              <span className="font-semibold">{fileToDelete.title}</span>&quot;?
+              <span className="font-semibold">{fileToDelete?.title}</span>
+              &quot;?
             </p>
 
             <div className="flex items-center justify-end gap-3">
