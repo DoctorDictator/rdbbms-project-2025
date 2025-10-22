@@ -1,4 +1,3 @@
-// ...existing code...
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
@@ -6,11 +5,6 @@ export function middleware(request: NextRequest) {
   const url = request.nextUrl.clone();
   const pathname = url.pathname;
   const token = request.cookies.get("token")?.value;
-
-  // quick debug log (appears in the Next dev server terminal)
-  console.log(
-    `[middleware] path=${pathname} token=${token ? "present" : "absent"}`
-  );
 
   // allow internals, public assets and API
   if (
@@ -41,11 +35,9 @@ export function middleware(request: NextRequest) {
   );
   const isRoot = pathname === "/";
 
-  // root: redirect based on auth state
+  // root: always public, never redirect
   if (isRoot) {
-    return token
-      ? NextResponse.redirect(new URL("/files", request.url))
-      : NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.next();
   }
 
   // not logged in -> protect pages
@@ -73,4 +65,3 @@ export const config = {
     "/auth/:path*",
   ],
 };
-// ...existing code...

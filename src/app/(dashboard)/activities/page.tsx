@@ -221,7 +221,6 @@ export default function ActivitiesPage() {
         {!isLoading && !error && filteredActivities.length > 0 && (
           <div className="mt-4 text-center text-sm text-gray-400">
             Showing {filteredActivities.length} activity
-            {filteredActivities.length !== 1 ? "ies" : "y"}
           </div>
         )}
 
