@@ -1,86 +1,74 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
+import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 
-const prisma = new PrismaClient();
+// Extract clean email or fallback username from free-form text (e.g. "Harsh <harsh@x.com> - note")
+function parseIdentifier(raw: string): { email?: string; username?: string } {
+  const s = (raw ?? "").trim();
+  const emailMatch = s.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (emailMatch) return { email: emailMatch[0].toLowerCase() };
 
-// Helper to clean undefined keys from where clause
-function cleanWhereClause(where: Record<string, unknown>) {
-  const cleaned: Record<string, unknown> = {};
-  Object.keys(where).forEach((key) => {
-    if (where[key] !== undefined) cleaned[key] = where[key];
-  });
-  return cleaned;
+  const token = s
+    .split(/[,\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean)[0];
+  if (token) return { username: token.replace(/^[<"'(]+|[>"')]+$/g, "") };
+
+  return {};
 }
 
-// GET /api/friendships - Get all friendships for authenticated user
+// GET /api/friendships
 export async function GET(request: NextRequest) {
   try {
     const token = request.cookies.get("token")?.value;
-    if (!token) {
+    if (!token)
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
 
     const decoded = jwt.verify(
       token,
       process.env.JWT_SECRET || "your-secret-key"
     ) as { userId: string };
-
     const searchParams = request.nextUrl.searchParams;
-    const status = searchParams.get("status");
+
+    const statusParam = searchParams.get("status") as
+      | Prisma.FriendshipScalarWhereInput["status"]
+      | null;
     const sent = searchParams.get("sent") === "true";
-    const limit = parseInt(searchParams.get("limit") || "50");
-    const offset = parseInt(searchParams.get("offset") || "0");
+    const limit = parseInt(searchParams.get("limit") || "50", 10);
+    const offset = parseInt(searchParams.get("offset") || "0", 10);
 
-    const whereClause: Record<string, unknown> = {};
-
+    // Build ONE typed where used for both findMany and count
+    let where: Prisma.FriendshipWhereInput;
     if (sent) {
-      whereClause.userId = decoded.userId;
+      where = {
+        userId: decoded.userId,
+        ...(statusParam ? { status: statusParam } : {}),
+      };
     } else {
-      whereClause.OR = [
-        { userId: decoded.userId },
-        { friendId: decoded.userId },
-      ];
+      where = {
+        OR: [{ userId: decoded.userId }, { friendId: decoded.userId }],
+        ...(statusParam ? { status: statusParam } : {}),
+      };
     }
-
-    if (status) {
-      whereClause.status = status;
-    }
-
-    // Clean undefined keys for count
-    const countWhereClause = cleanWhereClause(whereClause);
 
     const friendships = await prisma.friendship.findMany({
-      where: whereClause,
+      where,
       include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            email: true,
-          },
-        },
+        user: { select: { id: true, username: true, name: true, email: true } },
         friend: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            email: true,
-          },
+          select: { id: true, username: true, name: true, email: true },
         },
       },
-      orderBy: {
-        createdAt: "desc",
-      },
+      orderBy: { createdAt: "desc" },
       take: limit,
       skip: offset,
     });
 
-    // Map to friend info for frontend
+    // Shape into "other user" rows
     const friends = friendships.map((f) => {
-      const isUser = f.userId === decoded.userId;
-      const other = isUser ? f.friend : f.user;
+      const isRequester = f.userId === decoded.userId;
+      const other = isRequester ? f.friend : f.user;
       return {
         id: other.id,
         username: other.username,
@@ -93,19 +81,13 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const totalCount = await prisma.friendship.count({
-      where: countWhereClause,
-    });
+    const totalCount = await prisma.friendship.count({ where });
 
     return NextResponse.json(
       {
         friends,
         total: totalCount,
-        pagination: {
-          limit,
-          offset,
-          hasMore: offset + limit < totalCount,
-        },
+        pagination: { limit, offset, hasMore: offset + limit < totalCount },
       },
       { status: 200 }
     );
@@ -115,51 +97,50 @@ export async function GET(request: NextRequest) {
       { error: "Failed to fetch friends" },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }
 
-// POST /api/friendships - Send a friend request
+// POST /api/friendships - Send a friend request (identifier can be messy)
 export async function POST(request: NextRequest) {
   try {
     const token = request.cookies.get("token")?.value;
-    if (!token) {
+    if (!token)
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
 
     const decoded = jwt.verify(
       token,
       process.env.JWT_SECRET || "your-secret-key"
     ) as { userId: string };
 
-    const body = await request.json();
-    const { friendUsername, friendEmail, identifier } = body;
+    const body = await request.json().catch(() => ({}));
+    const { friendUsername, friendEmail, identifier } = body ?? {};
 
-    const searchValue = identifier || friendUsername || friendEmail;
-    if (!searchValue) {
+    const raw = identifier || friendUsername || friendEmail;
+    if (!raw) {
       return NextResponse.json(
         { error: "Friend username or email is required" },
         { status: 400 }
       );
     }
 
+    const { email, username } = parseIdentifier(String(raw));
+
     const friendUser = await prisma.user.findFirst({
       where: {
-        OR: [{ username: searchValue }, { email: searchValue }],
+        OR: [
+          ...(email
+            ? [{ email: { equals: email, mode: "insensitive" as const } }]
+            : []),
+          ...(username
+            ? [{ username: { equals: username, mode: "insensitive" as const } }]
+            : []),
+        ],
       },
-      select: {
-        id: true,
-        username: true,
-        name: true,
-        email: true,
-      },
+      select: { id: true, username: true, name: true, email: true },
     });
 
-    if (!friendUser) {
+    if (!friendUser)
       return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
     if (friendUser.id === decoded.userId) {
       return NextResponse.json(
         { error: "You cannot send a friend request to yourself" },
@@ -167,22 +148,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const existingFriendship = await prisma.friendship.findFirst({
+    const existing = await prisma.friendship.findFirst({
       where: {
         OR: [
-          {
-            userId: decoded.userId,
-            friendId: friendUser.id,
-          },
-          {
-            userId: friendUser.id,
-            friendId: decoded.userId,
-          },
+          { userId: decoded.userId, friendId: friendUser.id },
+          { userId: friendUser.id, friendId: decoded.userId },
         ],
       },
     });
 
-    if (existingFriendship) {
+    if (existing) {
       return NextResponse.json(
         { error: "Friendship or request already exists" },
         { status: 400 }
@@ -196,32 +171,23 @@ export async function POST(request: NextRequest) {
         status: "PENDING",
       },
       include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            email: true,
-          },
-        },
+        user: { select: { id: true, username: true, name: true, email: true } },
         friend: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            email: true,
-          },
+          select: { id: true, username: true, name: true, email: true },
         },
       },
     });
 
-    await prisma.activity.create({
-      data: {
-        userId: decoded.userId,
-        fileId: null,
-        action: "FRIEND_REQUEST_SENT",
-      },
-    });
+    // Non-blocking activity
+    prisma.activity
+      .create({
+        data: {
+          userId: decoded.userId,
+          fileId: null,
+          action: "FRIEND_REQUEST_SENT",
+        },
+      })
+      .catch(() => {});
 
     return NextResponse.json(
       {
@@ -245,7 +211,5 @@ export async function POST(request: NextRequest) {
       { error: "Failed to send friend request" },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

@@ -83,11 +83,11 @@ export default function FavouritesPage() {
 
   // Filter files based on search
   const filteredFiles = files.filter((file) => {
-    const q = searchQuery.toLowerCase();
-    return (
-      file.title.toLowerCase().includes(q) ||
-      file.content.toLowerCase().includes(q)
-    );
+    const matchesSearch =
+      file.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      file.content.toLowerCase().includes(searchQuery.toLowerCase());
+
+    return matchesSearch;
   });
 
   return (
@@ -289,15 +289,13 @@ export default function FavouritesPage() {
                         </Link>
                       </td>
 
-                      {/* Content Preview — preserve line breaks without altering UI/logic */}
+                      {/* Content Preview */}
                       <td className="px-6 py-4 text-sm text-gray-400 hidden lg:table-cell max-w-xs">
                         <Link
                           href={`/files/${file.id}`}
                           className="hover:text-gray-300 transition-colors"
                         >
-                          <span className="whitespace-pre-line break-words">
-                            {truncateText(file.content, 60)}
-                          </span>
+                          {truncateText(file.content, 60)}
                         </Link>
                       </td>
 

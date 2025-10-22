@@ -168,116 +168,255 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/shares/with-me - Mark all shares as viewed/acknowledged (optional feature)
+type JwtPayload = { userId: string };
+type ShareRequestBody = {
+  fileId?: string;
+  identifier?: string;
+  permission?: "VIEW" | "EDIT";
+};
+const PERMISSIONS = new Set<"VIEW" | "EDIT">(["VIEW", "EDIT"]);
+
+/**
+ * Try to pull a clean email or username out of any free-form identifier string.
+ * Supports:
+ *  - "harsh"
+ *  - "harsh@example.com"
+ *  - "Harsh <harsh@example.com>"
+ *  - "harsh@example.com - note", "harsh (example) <harsh@example.com>"
+ *  - "harsh some note" -> username = "harsh"
+ */
+function parseIdentifier(identifierRaw: string): {
+  email?: string;
+  username?: string;
+} {
+  const identifier = identifierRaw.trim();
+
+  // Email regex: simple and permissive
+  const emailMatch = identifier.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (emailMatch) {
+    return { email: emailMatch[0].toLowerCase() };
+  }
+
+  // Otherwise, take the first non-empty token as username (strip <>,"'- around it)
+  const firstToken = identifier
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)[0];
+
+  if (firstToken) {
+    const username = firstToken.replace(/^[<"'(]+|[>"')]+$/g, "");
+    return { username };
+  }
+
+  return {};
+}
+
+/**
+ * POST /api/shares
+ * Body: { fileId: string, identifier: string (username or email, can include notes), permission?: "VIEW" | "EDIT" }
+ */
 export async function POST(request: NextRequest) {
   try {
-    // Get token from cookie
+    // ---- Auth via cookie JWT ----
     const token = request.cookies.get("token")?.value;
-
     if (!token) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // Verify token
     const decoded = jwt.verify(
       token,
       process.env.JWT_SECRET || "your-secret-key"
-    ) as { userId: string };
+    ) as JwtPayload;
+    const currentUserId = decoded.userId;
+    // ---- Parse body ----
+    const body = (await request
+      .json()
+      .catch(() => ({} as ShareRequestBody))) as ShareRequestBody;
+    const { fileId, identifier, permission } = body;
 
-    // Get body for optional actions
-    const body = await request.json().catch(() => ({}));
-    const { action, shareIds } = body;
-
-    // Handle bulk actions
-    if (action === "remove" && shareIds && Array.isArray(shareIds)) {
-      // Remove multiple shares (user declining shares)
-      const result = await prisma.fileShare.deleteMany({
-        where: {
-          id: {
-            in: shareIds,
-          },
-          sharedWithId: decoded.userId, // Only allow removing shares where user is recipient
-        },
-      });
-
+    if (!fileId || !identifier) {
       return NextResponse.json(
-        {
-          message: `Successfully removed ${result.count} share(s)`,
-          removedCount: result.count,
-        },
-        { status: 200 }
+        { error: "fileId and identifier are required" },
+        { status: 400 }
       );
     }
 
-    if (action === "favorite" && shareIds && Array.isArray(shareIds)) {
-      // Get file IDs from share IDs
-      const shares = await prisma.fileShare.findMany({
-        where: {
-          id: {
-            in: shareIds,
+    const perm: "VIEW" | "EDIT" = PERMISSIONS.has(permission)
+      ? permission
+      : "VIEW";
+
+    // ---- Clean identifier to email or username ----
+    const { email, username } = parseIdentifier(String(identifier));
+    if (!email && !username) {
+      return NextResponse.json(
+        { error: "Provide a valid username or email to share with" },
+        { status: 400 }
+      );
+    }
+
+    // ---- Ensure file exists and you are the owner ----
+    const file = await prisma.file.findUnique({
+      where: { id: fileId },
+      include: {
+        owner: {
+          select: { id: true, username: true, email: true, name: true },
+        },
+      },
+    });
+
+    if (!file) {
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+    if (file.owner.id !== currentUserId) {
+      return NextResponse.json(
+        { error: "Not authorized to share this file" },
+        { status: 403 }
+      );
+    }
+
+    // ---- Find recipient by email or username (case-insensitive) ----
+    const recipient = await prisma.user.findFirst({
+      where: {
+        OR: [
+          ...(email
+            ? [{ email: { equals: email, mode: "insensitive" as const } }]
+            : []),
+          ...(username
+            ? [{ username: { equals: username, mode: "insensitive" as const } }]
+            : []),
+        ],
+      },
+      select: { id: true, username: true, name: true, email: true },
+    });
+
+    if (!recipient) {
+      return NextResponse.json(
+        { error: "Recipient not found. Check the username/email." },
+        { status: 404 }
+      );
+    }
+
+    if (recipient.id === currentUserId) {
+      return NextResponse.json(
+        { error: "You cannot share a file with yourself" },
+        { status: 400 }
+      );
+    }
+
+    // ---- If share exists, update permission; else create ----
+    const existingShare = await prisma.fileShare.findFirst({
+      where: {
+        fileId: file.id,
+        sharedWithId: recipient.id,
+      },
+      include: {
+        owner: { select: { id: true, username: true, name: true } },
+        file: {
+          include: {
+            owner: {
+              select: { id: true, username: true, name: true, email: true },
+            },
+            favourites: { where: { userId: currentUserId } },
+            trash: { where: { userId: currentUserId } },
           },
-          sharedWithId: decoded.userId,
         },
-        select: {
-          fileId: true,
-        },
-      });
+      },
+    });
 
-      const fileIds = shares.map((s) => s.fileId);
-
-      // Add files to favorites
-      const favoritePromises = fileIds.map((fileId) =>
-        prisma.favourite.upsert({
-          where: {
-            userId_fileId: {
-              userId: decoded.userId,
-              fileId: fileId,
+    let share;
+    if (existingShare) {
+      // Update permission if changed
+      if (existingShare.permission !== perm) {
+        share = await prisma.fileShare.update({
+          where: { id: existingShare.id },
+          data: { permission: perm },
+          include: {
+            owner: { select: { id: true, username: true, name: true } },
+            file: {
+              include: {
+                owner: {
+                  select: { id: true, username: true, name: true, email: true },
+                },
+                favourites: { where: { userId: currentUserId } },
+                trash: { where: { userId: currentUserId } },
+              },
             },
           },
-          create: {
-            userId: decoded.userId,
-            fileId: fileId,
-          },
-          update: {},
-        })
-      );
-
-      await Promise.all(favoritePromises);
-
-      // Create activities
-      const activityPromises = fileIds.map((fileId) =>
-        prisma.activity.create({
-          data: {
-            userId: decoded.userId,
-            fileId: fileId,
-            action: "FILE_FAVOURITED",
-          },
-        })
-      );
-
-      await Promise.all(activityPromises);
-
-      return NextResponse.json(
-        {
-          message: `Successfully added ${fileIds.length} shared file(s) to favorites`,
-          favoritedCount: fileIds.length,
+        });
+      } else {
+        share = existingShare;
+      }
+    } else {
+      share = await prisma.fileShare.create({
+        data: {
+          fileId: file.id,
+          ownerId: currentUserId,
+          sharedWithId: recipient.id,
+          permission: perm,
         },
-        { status: 200 }
-      );
+        include: {
+          owner: { select: { id: true, username: true, name: true } },
+          file: {
+            include: {
+              owner: {
+                select: { id: true, username: true, name: true, email: true },
+              },
+              favourites: { where: { userId: currentUserId } },
+              trash: { where: { userId: currentUserId } },
+            },
+          },
+        },
+      });
+
+      // Optional: create activity entry
+      try {
+        await prisma.activity.create({
+          data: {
+            userId: currentUserId,
+            fileId: file.id,
+            action: "FILE_SHARED",
+          },
+        });
+      } catch {
+        // Non-fatal
+      }
     }
 
-    // Default response if no action specified
-    return NextResponse.json(
-      {
-        message: "No action specified",
-        availableActions: ["remove", "favorite"],
+    // ---- Response shaped for your UI happiness ----
+    const responsePayload = {
+      shareId: share.id,
+      permission: share.permission,
+      sharedAt: share.createdAt.toISOString(),
+      sharedBy: share.owner, // owner is the sharer (you)
+      file: {
+        id: share.file.id,
+        title: share.file.title,
+        content: share.file.content,
+        isFavorite: share.file.favourites?.length > 0,
+        isTrashed: share.file.trash?.length > 0,
+        isShared: true,
+        canEdit: share.permission === "EDIT",
+        owner: share.file.owner,
+        createdAt: share.file.createdAt.toISOString(),
+        updatedAt: share.file.updatedAt.toISOString(),
       },
-      { status: 400 }
-    );
-  } catch (error) {
-    console.error("Shared files action error:", error);
+      // Additionally echo recipient for confirmations
+      sharedWith: {
+        id: recipient.id,
+        username: recipient.username,
+        name: recipient.name,
+        email: recipient.email,
+      },
+      updated: !!existingShare,
+    };
+
+    return NextResponse.json(responsePayload, {
+      status: existingShare ? 200 : 201,
+    });
+  } catch (err) {
+    console.error("Create share error:", err);
     return NextResponse.json(
-      { error: "Failed to process action" },
+      { error: "Failed to share file" },
       { status: 500 }
     );
   } finally {
