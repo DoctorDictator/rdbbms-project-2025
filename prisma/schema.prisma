@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// ===================== Models =====================
+model User {
+  id                   String        @id @default(cuid())
+  username             String        @unique
+  email                String?       @unique
+  phone                String?       @unique
+  password             String
+  name                 String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  filesOwned           File[]
+  activities           Activity[]
+  favourites           Favourite[]
+  trashedFiles         Trash[]
+  friendshipsInitiated Friendship[]  @relation("FriendshipInitiator")
+  friendshipsReceived  Friendship[]  @relation("FriendshipReceiver")
+  sharesGiven          FileShare[]   @relation("ShareOwner")
+  sharesReceived       FileShare[]   @relation("ShareRecipient")
+
+  @@index([username])
+}
+
+model File {
+  id               String       @id @default(cuid())
+  title            String
+  content          String
+  ownerId          String
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  owner            User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  shares           FileShare[]
+  activities       Activity[]
+  favourites       Favourite[]
+  trash            Trash[]
+
+  @@index([ownerId])
+  @@index([updatedAt])
+}
+
+model FileShare {
+  id           String          @id @default(cuid())
+  fileId       String
+  ownerId      String
+  sharedWithId String
+  permission   SharePermission @default(VIEW)
+  createdAt    DateTime        @default(now())
+  file         File            @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  owner        User            @relation("ShareOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  sharedWith   User            @relation("ShareRecipient", fields: [sharedWithId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, sharedWithId])
+  @@index([sharedWithId])
+  @@index([ownerId])
+}
+
+model Friendship {
+  id          String           @id @default(cuid())
+  userId      String
+  friendId    String
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  user        User             @relation("FriendshipInitiator", fields: [userId], references: [id], onDelete: Cascade)
+  friend      User             @relation("FriendshipReceiver", fields: [friendId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendId])
+  @@index([friendId, status])
+}
+
+model Activity {
+  id          String       @id @default(cuid())
+  userId      String
+  fileId      String?
+  action      ActivityType
+  createdAt   DateTime     @default(now())
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file        File?        @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([fileId, createdAt])
+}
+
+model Favourite {
+  id        String   @id @default(cuid())
+  userId    String
+  fileId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fileId])
+  @@index([userId])
+}
+
+model Trash {
+  id          String   @id @default(cuid())
+  userId      String
+  fileId      String
+  deletedAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file        File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fileId])
+  @@index([userId])
+  @@index([deletedAt])
+}
+
+/// ===================== Enums =====================
+enum SharePermission {
+  VIEW
+  EDIT
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  BLOCKED
+}
+
+enum ActivityType {
+  FILE_CREATED
+  FILE_UPDATED
+  FILE_DELETED
+  FILE_SHARED
+  FILE_UNSHARED
+  FRIEND_REQUEST_SENT
+  FRIEND_REQUEST_ACCEPTED
+  FRIEND_REQUEST_REJECTED
+  FILE_FAVOURITED
+  FILE_UNFAVOURITED
+  FILE_TRASHED
+  FILE_RESTORED
+  FRIENDSHIP_BLOCKED
+}
